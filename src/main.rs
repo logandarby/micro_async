@@ -12,13 +12,14 @@ use cortex_m_rt::entry;
 use defmt::{self as _, info};
 use defmt_rtt as _;
 use embedded_hal::digital::{PinState, StatefulOutputPin};
+use futures::{FutureExt, select_biased};
 
 use crate::{
     board::{Board, Button},
     channel::*,
     executor::Executor,
     gpiote::*,
-    led::{LedBlinker, LedMatrix},
+    led::{Direction, LedBlinker, LedMatrix},
     time::{TickDuration, Timer},
 };
 
@@ -32,12 +33,20 @@ mod time;
 async fn led_task(
     leds: &mut LedMatrix,
     blink_duration: TickDuration,
-    _btn_recv: Receiver<'_, ButtonDirection>,
+    mut btn_recv: Receiver<'_, ButtonDirection>,
 ) {
     let mut blinky = LedBlinker::new(leds, 0).unwrap();
     loop {
-        blinky.toggle();
-        Timer::delay(blink_duration).await;
+        select_biased! {
+            direction = btn_recv.recv().fuse() => {
+                blinky.shift(match direction {
+                    ButtonDirection::Left => Direction::Left,
+                    ButtonDirection::Right => Direction::Right,
+                });
+                blinky.toggle();
+            }
+            _ = Timer::delay(blink_duration).fuse() => { blinky.toggle(); }
+        }
     }
 }
 

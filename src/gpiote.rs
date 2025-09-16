@@ -61,10 +61,7 @@ impl InputChannel {
         Self { pin, channel_id }
     }
 
-    pub fn wait_for(
-        &mut self,
-        ready_state: PinState,
-    ) -> core::future::PollFn<impl FnMut(&mut core::task::Context<'_>) -> Poll<()>> {
+    pub async fn wait_for(&mut self, ready_state: PinState) -> () {
         poll_fn(move |cx| {
             if ready_state == PinState::from(self.pin.is_high().unwrap()) {
                 Poll::Ready(())
@@ -73,6 +70,7 @@ impl InputChannel {
                 Poll::Pending
             }
         })
+        .await
     }
 }
 
