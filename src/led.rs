@@ -14,6 +14,7 @@ impl LedMatrix {
 pub enum Direction {
     Left,
     Right,
+    Down,
 }
 
 pub struct LedBlinker<'a> {
@@ -36,9 +37,25 @@ impl<'a> LedBlinker<'a> {
     }
 
     pub fn shift(&mut self, direction: Direction) {
+        match direction {
+            Direction::Left | Direction::Right => self.shift_horizontal(direction),
+            Direction::Down => self.shift_vertical(),
+        }
+    }
+
+    fn shift_vertical(&mut self) {
+        let new_row = (self.row + 1) % LedMatrix::ROWS;
+        self.leds.pin_rows[self.row].set_low().unwrap();
+        self.row = new_row;
+        self.leds.pin_rows[self.row].set_high().unwrap();
+        self.leds.pin_cols[self.col].set_high().unwrap();
+    }
+
+    fn shift_horizontal(&mut self, direction: Direction) {
         let new_col = match direction {
             Direction::Left => (self.col + LedMatrix::COLS - 1) % LedMatrix::COLS,
             Direction::Right => (self.col + 1) % LedMatrix::COLS,
+            _ => return,
         };
         self.leds.pin_cols[self.col].set_high().unwrap();
         self.col = new_col;

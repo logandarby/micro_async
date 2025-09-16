@@ -11,11 +11,12 @@ use cortex_m::{self as _, asm, interrupt};
 use cortex_m_rt::entry;
 use defmt::{self as _, info};
 use defmt_rtt as _;
-use embedded_hal::digital::PinState;
+use embedded_hal::digital::{InputPin, OutputPin, PinState};
 use futures::{FutureExt, select_biased};
+use nrf52833_hal::gpio::Level;
 
 use crate::{
-    board::{Board, Button},
+    board::{Board, Button, TouchSensor},
     channel::*,
     executor::Executor,
     gpiote::*,
@@ -42,6 +43,7 @@ async fn led_task(
                 blinky.shift(match direction {
                     ButtonDirection::Left => Direction::Left,
                     ButtonDirection::Right => Direction::Right,
+                    ButtonDirection::Down => Direction::Down,
                 });
                 blinky.toggle();
             }
@@ -54,6 +56,7 @@ async fn led_task(
 pub enum ButtonDirection {
     Left,
     Right,
+    Down,
 }
 
 pub async fn button_task(
@@ -64,46 +67,41 @@ pub async fn button_task(
     let mut input = InputChannel::new(button);
     loop {
         input.wait_for(PinState::Low).await;
-        info!(
-            "{} Button Pressed",
-            match direction {
-                ButtonDirection::Left => "Left",
-                ButtonDirection::Right => "Right",
-            }
-        );
+        info!("Pressed");
         sender.send(direction);
         input.wait_for(PinState::High).await;
-        info!(
-            "{} Button Released",
-            match direction {
-                ButtonDirection::Left => "Left",
-                ButtonDirection::Right => "Right",
-            }
-        );
+        info!("Released");
     }
+}
+
+async fn read_capacitance(pin: TouchSensor) -> (TouchSensor, u32) {
+    let mut output_pin = pin.into_push_pull_output(Level::High);
+    output_pin.set_high().ok();
+    Timer::delay(TickDuration::micros(10)).await;
+    let pin = output_pin.into_floating_input();
+    let mut discharge_count = 0u32;
+    const MAX_COUNT: u32 = 1000;
+    while pin.is_high().unwrap() && discharge_count < MAX_COUNT {
+        discharge_count += 1;
+        Timer::delay(TickDuration::micros(1)).await;
+    }
+    (pin, discharge_count)
+}
+
+pub async fn touch_task(mut touch: TouchSensor) {
+    let mut baseline = 0u32;
+    for _ in 0..10 {
+        let result = read_capacitance(touch).await;
+    }
+    loop {}
 }
 
 #[entry]
 fn main() -> ! {
     info!("Starting");
     let mut b = Board::new();
-    let btn_channel = Channel::<ButtonDirection>::new();
-    let led_task = pin!(led_task(
-        &mut b.leds,
-        TickDuration::millis(500),
-        btn_channel.get_recv()
-    ));
-    let button_task_r = pin!(button_task(
-        b.btn_r,
-        ButtonDirection::Right,
-        btn_channel.get_sender()
-    ));
-    let button_task_l = pin!(button_task(
-        b.btn_l,
-        ButtonDirection::Left,
-        btn_channel.get_sender()
-    ));
-    Executor::run_tasks(&mut [button_task_l, button_task_r, led_task]);
+    let touch_task = pin!(touch_task(b.touch_sensor));
+    Executor::run_tasks(&mut [touch_task]);
 }
 
 #[panic_handler]

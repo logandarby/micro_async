@@ -9,7 +9,7 @@ use critical_section::Mutex;
 use embedded_hal::digital::{InputPin, PinState};
 use nrf52833_hal::{
     gpio::*,
-    gpiote::Gpiote,
+    gpiote::{Gpiote, GpioteInputPin},
     pac::{GPIOTE, Interrupt, NVIC, interrupt},
 };
 
@@ -30,22 +30,25 @@ static GPIOTE_MANAGER: GpioteManager = GpioteManager {
 };
 
 const INVALID_TASK_ID: usize = usize::MAX;
-const MAX_CHANNELS: usize = 2;
+const MAX_CHANNELS: usize = 3;
 static WAKE_TASKS: [AtomicUsize; MAX_CHANNELS] =
     [const { AtomicUsize::new(INVALID_TASK_ID) }; MAX_CHANNELS];
 static NEXT_CHANNEL: AtomicUsize = AtomicUsize::new(0);
 
-type InputChannelPin = Pin<Input<Floating>>;
+type InputChannelPin<MODE> = Pin<Input<MODE>>;
 
 // Essentially registers an interrupt with a GPIO pin and a channel
 // When the pin transitions to the ready state, then an interrupt is fired
-pub struct InputChannel {
-    pin: InputChannelPin,
+pub struct InputChannel<MODE> {
+    pin: InputChannelPin<MODE>,
     channel_id: usize,
 }
 
-impl InputChannel {
-    pub fn new(pin: InputChannelPin) -> Self {
+impl<MODE> InputChannel<MODE>
+where
+    InputChannelPin<MODE>: GpioteInputPin,
+{
+    pub fn new(pin: InputChannelPin<MODE>) -> Self {
         let channel_id = NEXT_CHANNEL.fetch_add(1, Ordering::Relaxed);
         critical_section::with(|cs| {
             let mut rm = GPIOTE_MANAGER.gpiote.borrow_ref_mut(cs);
@@ -53,6 +56,7 @@ impl InputChannel {
             let channel = match channel_id {
                 0 => gpiote.channel0(),
                 1 => gpiote.channel1(),
+                2 => gpiote.channel2(),
                 _ => panic!("Too many channels"),
             };
             channel.input_pin(&pin).toggle().enable_interrupt();
@@ -63,7 +67,7 @@ impl InputChannel {
 
     pub async fn wait_for(&mut self, ready_state: PinState) -> () {
         poll_fn(move |cx| {
-            if ready_state == PinState::from(self.pin.is_high().unwrap()) {
+            if ready_state == self.pin.is_high().unwrap().into() {
                 Poll::Ready(())
             } else {
                 WAKE_TASKS[self.channel_id].store(cx.waker().task_id(), Ordering::Relaxed);
@@ -85,6 +89,7 @@ fn GPIOTE() {
             let channel = match channel {
                 0 => gpiote.channel0(),
                 1 => gpiote.channel1(),
+                2 => gpiote.channel2(),
                 _ => panic!("Too many channels"),
             };
             if !channel.is_event_triggered() {

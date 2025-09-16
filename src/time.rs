@@ -6,7 +6,6 @@ use core::{
 };
 
 use critical_section::Mutex;
-use defmt::info;
 use fugit::{Duration, Instant};
 pub type TickInstant = Instant<u64, 1, 32768>;
 pub type TickDuration = Duration<u64, 1, 32768>;
@@ -163,7 +162,6 @@ fn RTC0() {
         }
         if rtc0.is_event_triggered(RtcInterrupt::Compare0) {
             // Handle the event, and if there are more deadlines, set the compare register
-            info!("COMPARE TRIGGERED");
             let mut deadlines = DEADLINES.borrow_ref_mut(cs);
             let latest = deadlines.pop().expect("No deadline available on interrupt");
             if let Some(pending_deadline) = deadlines.peek() {

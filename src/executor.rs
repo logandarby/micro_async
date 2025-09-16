@@ -4,17 +4,20 @@ use core::{
 };
 
 use cortex_m::asm;
-use defmt::{error, info};
+use defmt::error;
 use heapless::mpmc::Queue;
 
 pub struct Executor {}
 
-type TaskQueue = Queue<usize, 4>;
+const MAX_TASKS: usize = 4;
+
+type TaskQueue = Queue<usize, MAX_TASKS>;
 
 static TASK_ID_READY: TaskQueue = TaskQueue::new();
 
 impl Executor {
-    pub fn run_tasks(tasks: &mut [Pin<&mut dyn Future<Output = ()>>]) -> ! {
+    pub fn run_tasks<const N: usize>(tasks: &mut [Pin<&mut dyn Future<Output = ()>>; N]) -> ! {
+        const { assert!(N <= MAX_TASKS) };
         for task_id in 0..tasks.len() {
             TASK_ID_READY.enqueue(task_id).expect("Task queue is full");
         }
@@ -24,7 +27,6 @@ impl Executor {
                     error!("Bad task ID {}", task);
                     continue;
                 }
-                info!("Running task {}", task);
                 let _ = tasks[task]
                     .as_mut()
                     .poll(&mut Context::from_waker(&WakerManager::get_waker(task)));
@@ -36,7 +38,6 @@ impl Executor {
     // When an interrupt is fired, this method can be called to make sure the appropriate task ID
     // is ran on next poll of the executor
     pub fn wake_task(task_id: usize) {
-        info!("Waking task {}", task_id);
         if TASK_ID_READY.enqueue(task_id).is_err() {
             panic!("Task Queue is full");
         }

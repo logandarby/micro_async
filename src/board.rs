@@ -3,11 +3,20 @@ use nrf52833_hal::{self as hal, gpio::*};
 use crate::{gpiote::GpioteManager, led::LedMatrix, time::Ticker};
 
 pub type Button = Pin<Input<Floating>>;
+pub type TouchSensor = Pin<Input<Floating>>;
+
+pub struct Rings {
+    ring0: Button,
+    ring1: Button,
+    ring2: Button,
+}
 
 pub struct Board {
     pub leds: LedMatrix,
     pub btn_l: Button,
     pub btn_r: Button,
+    pub touch_sensor: TouchSensor,
+    pub rings: Rings,
 }
 
 impl Board {
@@ -40,6 +49,12 @@ impl Board {
             },
             btn_l: p0parts.p0_14.into_floating_input().degrade(),
             btn_r: p0parts.p0_23.into_floating_input().degrade(),
+            touch_sensor: p1parts.p1_04.into_floating_input().degrade(),
+            rings: Rings {
+                ring0: p0parts.p0_02.into_floating_input().degrade(),
+                ring1: p0parts.p0_03.into_floating_input().degrade(),
+                ring2: p0parts.p0_04.into_floating_input().degrade(),
+            },
         }
     }
 }
