@@ -1,0 +1,148 @@
+#![no_std]
+#![no_main]
+
+use core::{
+    panic::PanicInfo,
+    pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use cortex_m::{self as _, asm, interrupt};
+use cortex_m_rt::entry;
+use defmt::{self as _, info};
+use defmt_rtt as _;
+use embedded_hal::digital::{InputPin, OutputPin, PinState, StatefulOutputPin};
+use nrf52833_hal::gpio::{Floating, Input};
+
+use crate::{
+    board::{Board, Button, LedMatrix},
+    time::{TickDuration, Ticker, Timer},
+};
+
+mod board;
+mod time;
+
+enum LedState<'a> {
+    Toggle,
+    Wait(Timer<'a>),
+}
+
+pub struct LedTask<'a> {
+    leds: &'a mut LedMatrix,
+    active_col: usize,
+    ticker: &'a Ticker,
+    state: LedState<'a>,
+}
+
+impl<'a> LedTask<'a> {
+    pub fn new(leds: &'a mut LedMatrix, ticker: &'a Ticker) -> Self {
+        let _ = leds.pin_cols[0].set_state(PinState::Low);
+        Self {
+            leds,
+            ticker,
+            active_col: 0,
+            state: LedState::Toggle,
+        }
+    }
+
+    pub fn poll(&mut self) {
+        match self.state {
+            LedState::Toggle => {
+                let _ = self.leds.pin_rows[0].toggle().unwrap();
+                let timer = Timer::new(TickDuration::millis(500), self.ticker);
+                self.state = LedState::Wait(timer);
+            }
+            LedState::Wait(ref timer) => {
+                if !timer.is_ready() {
+                    return;
+                }
+                self.state = LedState::Toggle;
+            }
+        }
+    }
+}
+
+pub enum ButtonDirection {
+    Left,
+    Right,
+}
+
+pub enum ButtonState {
+    Wait,
+    Active,
+}
+
+pub struct ButtonTask {
+    button: Button,
+    direction: ButtonDirection,
+    state: ButtonState,
+}
+
+impl ButtonTask {
+    pub fn new(button: Button, direction: ButtonDirection) -> Self {
+        Self {
+            button,
+            direction,
+            state: ButtonState::Wait,
+        }
+    }
+
+    pub fn poll(&mut self) {
+        match self.state {
+            ButtonState::Wait => {
+                if self.button.is_low().unwrap() {
+                    info!("Button pressed!");
+                    self.state = ButtonState::Active;
+                }
+            }
+            ButtonState::Active => {
+                if self.button.is_high().unwrap() {
+                    self.state = ButtonState::Wait;
+                }
+            }
+        }
+    }
+}
+
+struct Sender<T> {}
+
+struct Receiver<T> {}
+
+struct Channel {}
+
+impl<T> Channel<T> {
+    pub fn new() -> (Sender<T>, Receiver<T>) {
+        (Sender {}, Receiver {})
+    }
+}
+
+#[entry]
+fn main() -> ! {
+    info!("Starting");
+    let mut b = Board::new();
+    let mut led_task = LedTask::new(&mut b.leds, &b.ticker);
+    let mut button_task = ButtonTask::new(b.btn_l, ButtonDirection::Left);
+    loop {
+        led_task.poll();
+        button_task.poll();
+        // if b.btn_l.is_low().unwrap() {
+        //     info!("Left pressed");
+        // }
+        // if timer.is_ready() {
+        //     info!("Time's up!");
+        //     break;
+        // }
+    }
+}
+
+#[panic_handler]
+fn panic_handler(info: &PanicInfo) -> ! {
+    static PANICKED: AtomicBool = AtomicBool::new(false);
+    interrupt::disable();
+    if !PANICKED.load(Ordering::Relaxed) {
+        PANICKED.store(true, Ordering::Relaxed);
+        defmt::error!("{}", defmt::Display2Format(info));
+    }
+    asm::bkpt();
+    asm::udf();
+}

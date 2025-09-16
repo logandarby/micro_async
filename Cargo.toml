@@ -1,0 +1,16 @@
+[package]
+name = "async_fluid"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+critical-section = "1.2.0"
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+# embassy-nrf = { version = "0.7.0", features = ["nrf52833", "unstable-pac"] }
+embedded-hal = "1.0.0"
+fugit = "0.3.7"
+heapless = { version = "0.9.1", features = ["portable-atomic"] }
+nrf52833-hal = "0.18.0"
