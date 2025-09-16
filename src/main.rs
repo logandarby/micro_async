@@ -11,7 +11,7 @@ use cortex_m::{self as _, asm, interrupt};
 use cortex_m_rt::entry;
 use defmt::{self as _, info};
 use defmt_rtt as _;
-use embedded_hal::digital::{PinState, StatefulOutputPin};
+use embedded_hal::digital::PinState;
 use futures::{FutureExt, select_biased};
 
 use crate::{

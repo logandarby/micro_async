@@ -30,9 +30,9 @@ static GPIOTE_MANAGER: GpioteManager = GpioteManager {
 };
 
 const INVALID_TASK_ID: usize = usize::MAX;
-const DEFAULT_TASK: AtomicUsize = AtomicUsize::new(INVALID_TASK_ID);
 const MAX_CHANNELS: usize = 2;
-static WAKE_TASKS: [AtomicUsize; MAX_CHANNELS] = [DEFAULT_TASK; MAX_CHANNELS];
+static WAKE_TASKS: [AtomicUsize; MAX_CHANNELS] =
+    [const { AtomicUsize::new(INVALID_TASK_ID) }; MAX_CHANNELS];
 static NEXT_CHANNEL: AtomicUsize = AtomicUsize::new(0);
 
 type InputChannelPin = Pin<Input<Floating>>;

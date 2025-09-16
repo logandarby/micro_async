@@ -10,10 +10,7 @@ use defmt::info;
 use fugit::{Duration, Instant};
 pub type TickInstant = Instant<u64, 1, 32768>;
 pub type TickDuration = Duration<u64, 1, 32768>;
-use heapless::{
-    BinaryHeap,
-    binary_heap::{Max, Min},
-};
+use heapless::{BinaryHeap, binary_heap::Min};
 use nrf52833_hal::{
     Rtc,
     pac::{NVIC, RTC0, interrupt},
@@ -84,7 +81,7 @@ struct Deadline {
     task_id: usize,
 }
 
-const DEADLINE_MAX_ITEMS: usize = 4;
+const DEADLINE_MAX_ITEMS: usize = 10;
 
 type DeadlinePQ = Mutex<RefCell<BinaryHeap<Deadline, Min, DEADLINE_MAX_ITEMS>>>;
 
@@ -123,7 +120,7 @@ impl Ticker {
                 ((overflow as u64) << 24) | counter as u64
             })
         };
-        TickInstant::from_ticks(ticks.into())
+        TickInstant::from_ticks(ticks)
     }
 
     fn add_deadline(deadline: TickInstant, task_id: usize) {
