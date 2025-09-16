@@ -11,13 +11,14 @@ use cortex_m::{self as _, asm, interrupt};
 use cortex_m_rt::entry;
 use defmt::{self as _, info};
 use defmt_rtt as _;
-use embedded_hal::digital::{OutputPin, PinState, StatefulOutputPin};
+use embedded_hal::digital::{PinState, StatefulOutputPin};
 
 use crate::{
-    board::{Board, Button, LedMatrix},
+    board::{Board, Button},
     channel::*,
     executor::Executor,
     gpiote::*,
+    led::{LedBlinker, LedMatrix},
     time::{TickDuration, Timer},
 };
 
@@ -25,59 +26,18 @@ mod board;
 mod channel;
 mod executor;
 mod gpiote;
+mod led;
 mod time;
 
-enum LedState {
-    Toggle,
-    Wait(Timer),
-}
-
-pub struct LedTask<'a> {
-    leds: &'a mut LedMatrix,
-    active_col: usize,
-    state: LedState,
-    btn_recv: Receiver<'a, ButtonDirection>,
-}
-
-impl<'a> LedTask<'a> {
-    pub fn new(leds: &'a mut LedMatrix, btn_recv: Receiver<'a, ButtonDirection>) -> Self {
-        let _ = leds.pin_cols[0].set_state(PinState::Low);
-        Self {
-            leds,
-            active_col: 0,
-            state: LedState::Toggle,
-            btn_recv,
-        }
-    }
-
-    pub fn poll(&mut self) {
-        match self.state {
-            LedState::Toggle => {
-                let _ = self.leds.pin_rows[0].toggle().unwrap();
-                let timer = Timer::new(TickDuration::millis(500));
-                self.state = LedState::Wait(timer);
-            }
-            LedState::Wait(ref timer) => {
-                if timer.is_ready() {
-                    self.state = LedState::Toggle;
-                }
-                if let Some(direction) = self.btn_recv.recv() {
-                    self.shift(direction);
-                    self.state = LedState::Toggle;
-                }
-            }
-        }
-    }
-
-    fn shift(&mut self, direction: ButtonDirection) {
-        let new_col = match direction {
-            ButtonDirection::Left => (self.active_col + LedMatrix::COLS - 1) % LedMatrix::COLS,
-            ButtonDirection::Right => (self.active_col + 1) % LedMatrix::COLS,
-        };
-        let _ = self.leds.pin_cols[self.active_col].set_high().unwrap();
-        self.active_col = new_col;
-        let _ = self.leds.pin_cols[self.active_col].set_low().unwrap();
-        let _ = self.leds.pin_rows[0].set_low().unwrap();
+async fn led_task(
+    leds: &mut LedMatrix,
+    blink_duration: TickDuration,
+    _btn_recv: Receiver<'_, ButtonDirection>,
+) {
+    let mut blinky = LedBlinker::new(leds, 0).unwrap();
+    loop {
+        blinky.toggle();
+        Timer::delay(blink_duration).await;
     }
 }
 
@@ -119,7 +79,11 @@ fn main() -> ! {
     info!("Starting");
     let mut b = Board::new();
     let btn_channel = Channel::<ButtonDirection>::new();
-    let mut _led_task = LedTask::new(&mut b.leds, btn_channel.get_recv());
+    let led_task = pin!(led_task(
+        &mut b.leds,
+        TickDuration::millis(500),
+        btn_channel.get_recv()
+    ));
     let button_task_r = pin!(button_task(
         b.btn_r,
         ButtonDirection::Right,
@@ -130,7 +94,7 @@ fn main() -> ! {
         ButtonDirection::Left,
         btn_channel.get_sender()
     ));
-    Executor::run_tasks(&mut [button_task_l, button_task_r]);
+    Executor::run_tasks(&mut [button_task_l, button_task_r, led_task]);
 }
 
 #[panic_handler]

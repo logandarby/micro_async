@@ -1,26 +1,6 @@
-use embedded_hal::digital::{OutputPin, PinState};
 use nrf52833_hal::{self as hal, gpio::*};
 
-use crate::{gpiote::GpioteManager, time::Ticker};
-
-pub struct LedMatrix {
-    pub pin_rows: [Pin<Output<PushPull>>; LedMatrix::ROWS],
-    pub pin_cols: [Pin<Output<PushPull>>; LedMatrix::COLS],
-}
-
-impl LedMatrix {
-    pub const ROWS: usize = 5;
-    pub const COLS: usize = 5;
-
-    pub fn clear(&mut self) {
-        for irow in 0..Self::ROWS {
-            let _ = self.pin_rows[irow].set_state(PinState::Low);
-        }
-        for icol in 0..Self::COLS {
-            let _ = self.pin_cols[icol].set_state(PinState::High);
-        }
-    }
-}
+use crate::{gpiote::GpioteManager, led::LedMatrix, time::Ticker};
 
 pub type Button = Pin<Input<Floating>>;
 

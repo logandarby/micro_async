@@ -1,37 +1,92 @@
 use core::{
     cell::RefCell,
+    pin::Pin,
     sync::atomic::{AtomicU32, Ordering},
+    task::{Context, Poll},
 };
 
 use critical_section::Mutex;
+use defmt::info;
 use fugit::{Duration, Instant};
 pub type TickInstant = Instant<u64, 1, 32768>;
 pub type TickDuration = Duration<u64, 1, 32768>;
+use heapless::{
+    BinaryHeap,
+    binary_heap::{Max, Min},
+};
 use nrf52833_hal::{
     Rtc,
     pac::{NVIC, RTC0, interrupt},
-    rtc::RtcInterrupt,
+    rtc::{RtcCompareReg, RtcInterrupt},
 };
+
+use crate::executor::{Executor, ExtWaker};
 
 pub struct Timer {
     end_time: TickInstant,
+    state: TimerState,
 }
 
 impl Timer {
     pub fn new(duration: TickDuration) -> Self {
         let end_time = Ticker::now() + duration;
-        Self { end_time }
+        Self {
+            end_time,
+            state: TimerState::Init,
+        }
     }
 
-    pub fn is_ready(&self) -> bool {
+    fn is_ready(&self) -> bool {
         Ticker::now() >= self.end_time
     }
+
+    pub async fn delay(duration: TickDuration) {
+        Timer::new(duration).await;
+    }
 }
+
+enum TimerState {
+    Wait,
+    Init,
+}
+
+impl Future for Timer {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.state {
+            TimerState::Init => {
+                Ticker::add_deadline(self.end_time, cx.waker().task_id());
+                self.state = TimerState::Wait;
+                Poll::Pending
+            }
+            TimerState::Wait => {
+                if self.is_ready() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+    }
+}
+
+static DEADLINES: DeadlinePQ = Mutex::new(RefCell::new(BinaryHeap::new()));
 
 static TICKER: Ticker = Ticker {
     rtc0: Mutex::new(RefCell::new(Option::None)),
     overflow_count: AtomicU32::new(0),
 };
+
+#[derive(Eq, PartialEq, PartialOrd, Ord, Debug)]
+struct Deadline {
+    value: u32,
+    task_id: usize,
+}
+
+const DEADLINE_MAX_ITEMS: usize = 4;
+
+type DeadlinePQ = Mutex<RefCell<BinaryHeap<Deadline, Min, DEADLINE_MAX_ITEMS>>>;
 
 pub struct Ticker {
     rtc0: Mutex<RefCell<Option<Rtc<RTC0>>>>,
@@ -42,9 +97,17 @@ impl Ticker {
     pub fn init(rtc0: RTC0, nvic: &mut NVIC) {
         let mut rtc0 = Rtc::new(rtc0, 0).unwrap();
         rtc0.enable_counter();
+
+        // Enable overflow interrupt
         rtc0.enable_event(RtcInterrupt::Overflow);
-        rtc0.enable_interrupt(RtcInterrupt::Overflow, Option::Some(nvic));
-        critical_section::with(|cs| TICKER.rtc0.replace(cs, Option::Some(rtc0)));
+        rtc0.enable_interrupt(RtcInterrupt::Overflow, Some(nvic));
+
+        // Enable compare interrupt
+        rtc0.enable_event(RtcInterrupt::Compare0);
+        rtc0.enable_interrupt(RtcInterrupt::Compare0, Some(nvic));
+
+        // Init
+        critical_section::with(|cs| TICKER.rtc0.replace(cs, Some(rtc0)));
     }
 
     pub fn now() -> TickInstant {
@@ -62,6 +125,30 @@ impl Ticker {
         };
         TickInstant::from_ticks(ticks.into())
     }
+
+    fn add_deadline(deadline: TickInstant, task_id: usize) {
+        let deadline_ticks = deadline
+            .ticks()
+            .try_into()
+            .expect("Deadline is much too big");
+        critical_section::with(|cs| {
+            let mut deadlines = DEADLINES.borrow_ref_mut(cs);
+            deadlines
+                .push(Deadline {
+                    task_id,
+                    value: deadline_ticks,
+                })
+                .expect("Timer queue is full!");
+            // Always set compare register to earliest deadline
+            TICKER
+                .rtc0
+                .borrow_ref_mut(cs)
+                .as_mut()
+                .expect("Timer has not been initialized")
+                .set_compare(RtcCompareReg::Compare0, deadlines.peek().unwrap().value)
+                .expect("Deadline out of range");
+        });
+    }
 }
 
 #[interrupt]
@@ -76,6 +163,18 @@ fn RTC0() {
             TICKER
                 .overflow_count
                 .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        if rtc0.is_event_triggered(RtcInterrupt::Compare0) {
+            // Handle the event, and if there are more deadlines, set the compare register
+            info!("COMPARE TRIGGERED");
+            let mut deadlines = DEADLINES.borrow_ref_mut(cs);
+            let latest = deadlines.pop().expect("No deadline available on interrupt");
+            if let Some(pending_deadline) = deadlines.peek() {
+                rtc0.set_compare(RtcCompareReg::Compare0, pending_deadline.value)
+                    .expect("Deadline out of range");
+            }
+            Executor::wake_task(latest.task_id);
+            rtc0.reset_event(RtcInterrupt::Compare0);
         }
         // Read needed for clock cycles
         let _ = rtc0.is_event_triggered(RtcInterrupt::Overflow);

@@ -13,4 +13,5 @@ defmt-rtt = "1.0.0"
 embedded-hal = "1.0.0"
 fugit = "0.3.7"
 heapless = { version = "0.9.1", features = ["portable-atomic"] }
+futures = { version = "0.3", default-features = false }
 nrf52833-hal = "0.18.0"
