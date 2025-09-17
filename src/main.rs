@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![allow(clippy::future_not_send)]
 
 use core::{
     panic::PanicInfo,
@@ -30,7 +31,6 @@ mod gpiote;
 mod infalliable;
 mod led;
 mod time;
-
 async fn led_task(
     leds: &mut LedMatrix,
     blink_duration: TickDuration,

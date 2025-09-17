@@ -79,7 +79,7 @@ static TICKER: Ticker = Ticker {
 
 #[derive(Eq, PartialEq, PartialOrd, Ord, Debug)]
 struct Deadline {
-    value: u32,
+    value: u64,
     task_id: usize,
 }
 
@@ -113,6 +113,8 @@ impl Ticker {
         #[allow(clippy::unwrap_used)]
         let mut rtc0 = Rtc::new(rtc0, 0).unwrap();
         rtc0.enable_counter();
+
+        rtc0.trigger_overflow();
 
         // Enable overflow interrupt
         rtc0.enable_event(RtcInterrupt::Overflow);
@@ -154,12 +156,6 @@ impl Ticker {
     // TODO: Implement overflow counter
     fn add_deadline(deadline: TickInstant, task_id: usize) -> Result<(), TimerError> {
         let deadline_ticks = deadline.ticks();
-        let deadline_ticks =
-            deadline_ticks
-                .try_into()
-                .map_err(|_| TimerError::DeadlineTooLarge {
-                    ticks: deadline_ticks,
-                })?;
         critical_section::with(|cs| {
             let mut deadlines = DEADLINES.borrow_ref_mut(cs);
             deadlines
@@ -171,13 +167,22 @@ impl Ticker {
             // Always set compare register to earliest deadline
             // SAFETY: Deadline always has a value in it, so this can't panic
             #[allow(clippy::unwrap_used)]
-            Self::acquire(cs)?
-                .set_compare(RtcCompareReg::Compare0, deadlines.peek().unwrap().value)
-                .map_err(|_| TimerError::DeadlineTooLarge {
-                    ticks: deadline_ticks.into(),
-                })
+            let deadline = deadlines.peek().unwrap();
+            let mut rtc0 = Self::acquire(cs)?;
+            set_deadline(deadline, &mut rtc0);
+            Ok(())
+            // .set_compare(RtcCompareReg::Compare0, deadline_low)
+            // .map_err(|_| TimerError::DeadlineTooLarge {
+            //     ticks: deadline_ticks.into(),
+            // })
         })
     }
+}
+
+fn set_deadline(deadline: &Deadline, rtc0: &mut RefMut<'_, Rtc<RTC0>>) {
+    let deadline_low = (deadline.value & 0x00FF_FFFF) as u32;
+    rtc0.set_compare(RtcCompareReg::Compare0, deadline_low)
+        .unwrap();
 }
 
 #[interrupt]
@@ -198,10 +203,7 @@ fn RTC0() {
             #[allow(clippy::expect_used)]
             let latest = deadlines.pop().expect("No deadline available on interrupt");
             if let Some(pending_deadline) = deadlines.peek() {
-                rtc0.set_compare(RtcCompareReg::Compare0, pending_deadline.value)
-                    .map_err(|_| TimerError::DeadlineTooLarge {
-                        ticks: pending_deadline.value.into(),
-                    })?;
+                set_deadline(pending_deadline, &mut rtc0);
             }
             Executor::wake_task(latest.task_id);
             rtc0.reset_event(RtcInterrupt::Compare0);
