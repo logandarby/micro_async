@@ -16,9 +16,9 @@ use futures::{FutureExt, select_biased};
 
 use crate::{
     board::{Board, Button},
-    channel::*,
+    channel::{Channel, Receiver, Sender},
     executor::Executor,
-    gpiote::*,
+    gpiote::InputChannel,
     led::{Direction, LedBlinker, LedMatrix},
     time::{TickDuration, Timer},
 };
@@ -27,6 +27,7 @@ mod board;
 mod channel;
 mod executor;
 mod gpiote;
+mod infalliable;
 mod led;
 mod time;
 
@@ -43,9 +44,8 @@ async fn led_task(
                     ButtonDirection::Left => Direction::Left,
                     ButtonDirection::Right => Direction::Right,
                 });
-                blinky.toggle();
             }
-            _ = Timer::delay(blink_duration).fuse() => { blinky.toggle(); }
+            () = Timer::delay(blink_duration).fuse() => { blinky.toggle(); }
         }
     }
 }
@@ -61,7 +61,8 @@ pub async fn button_task(
     direction: ButtonDirection,
     sender: Sender<'_, ButtonDirection>,
 ) {
-    let mut input = InputChannel::new(button);
+    #[allow(clippy::unwrap_used)] // Gpiotemanager is already initialized
+    let mut input = InputChannel::new(button).unwrap();
     loop {
         input.wait_for(PinState::Low).await;
         info!(

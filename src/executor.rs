@@ -4,12 +4,13 @@ use core::{
 };
 
 use cortex_m::asm;
-use defmt::{error, info};
+use defmt::info;
 use heapless::mpmc::Queue;
 
 pub struct Executor {}
 
-type TaskQueue = Queue<usize, 4>;
+const MAX_TASKS: usize = 8;
+type TaskQueue = Queue<usize, MAX_TASKS>;
 
 static TASK_ID_READY: TaskQueue = TaskQueue::new();
 
@@ -20,10 +21,7 @@ impl Executor {
         }
         loop {
             while let Some(task) = TASK_ID_READY.dequeue() {
-                if task > tasks.len() {
-                    error!("Bad task ID {}", task);
-                    continue;
-                }
+                assert!(task <= tasks.len(), "Bad task ID {task}");
                 info!("Running task {}", task);
                 let _ = tasks[task]
                     .as_mut()
@@ -37,9 +35,7 @@ impl Executor {
     // is ran on next poll of the executor
     pub fn wake_task(task_id: usize) {
         info!("Waking task {}", task_id);
-        if TASK_ID_READY.enqueue(task_id).is_err() {
-            panic!("Task Queue is full");
-        }
+        assert!(TASK_ID_READY.enqueue(task_id).is_ok(), "Task Queue is full");
     }
 }
 
@@ -76,5 +72,5 @@ impl WakerManager {
     unsafe fn wake_by_ref(p: *const ()) {
         Executor::wake_task(p as usize);
     }
-    unsafe fn drop(_p: *const ()) {}
+    const unsafe fn drop(_p: *const ()) {}
 }

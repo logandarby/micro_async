@@ -9,7 +9,7 @@ pub struct Sender<'a, T> {
 }
 
 impl<'a, T> Sender<'a, T> {
-    fn new(channel: &'a Channel<T>) -> Self {
+    const fn new(channel: &'a Channel<T>) -> Self {
         Self { channel }
     }
 
@@ -29,7 +29,7 @@ enum RecvState {
 }
 
 impl<'a, T> Receiver<'a, T> {
-    fn new(channel: &'a Channel<T>) -> Self {
+    const fn new(channel: &'a Channel<T>) -> Self {
         Self {
             channel,
             state: RecvState::Init,
@@ -43,13 +43,10 @@ impl<'a, T> Receiver<'a, T> {
                 self.state = RecvState::Wait;
                 Poll::Pending
             }
-            RecvState::Wait => {
-                if let Some(val) = self.channel.recv() {
-                    Poll::Ready(val)
-                } else {
-                    Poll::Pending
-                }
-            }
+            RecvState::Wait => self
+                .channel
+                .recv()
+                .map_or_else(|| Poll::Pending, |val| Poll::Ready(val)),
         })
         .await
     }
@@ -61,7 +58,7 @@ pub struct Channel<T> {
 }
 
 impl<T> Channel<T> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             item: Cell::new(Option::None),
             waker: RefCell::new(None),
@@ -83,11 +80,11 @@ impl<T> Channel<T> {
         self.waker.replace(Some(waker));
     }
 
-    pub fn get_sender<'a>(&'a self) -> Sender<'a, T> {
+    pub const fn get_sender(&self) -> Sender<'_, T> {
         Sender::new(self)
     }
 
-    pub fn get_recv<'a>(&'a self) -> Receiver<'a, T> {
+    pub const fn get_recv(&self) -> Receiver<'_, T> {
         Receiver::new(self)
     }
 }

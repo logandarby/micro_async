@@ -1,4 +1,7 @@
-use nrf52833_hal::{self as hal, gpio::*};
+use nrf52833_hal::{
+    self as hal,
+    gpio::{Floating, Input, Level, Pin, p0, p1},
+};
 
 use crate::{gpiote::GpioteManager, led::LedMatrix, time::Ticker};
 
