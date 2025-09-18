@@ -1,11 +1,11 @@
 use core::{
-    cell::RefCell,
+    cell::{RefCell, RefMut},
     future::poll_fn,
     sync::atomic::{AtomicUsize, Ordering},
     task::Poll,
 };
 
-use critical_section::Mutex;
+use critical_section::{CriticalSection, Mutex};
 use defmt::error;
 use embedded_hal::digital::{InputPin, PinState};
 use nrf52833_hal::{
@@ -14,10 +14,7 @@ use nrf52833_hal::{
     pac::{GPIOTE, Interrupt, NVIC, interrupt},
 };
 
-use crate::{
-    executor::{Executor, ExtWaker},
-    infalliable::InfallibleExt,
-};
+use crate::{atomic_waker::AtomicWaker, infalliable::InfallibleExt};
 
 pub struct GpioteManager {
     gpiote: Mutex<RefCell<Option<Gpiote>>>,
@@ -42,6 +39,15 @@ impl GpioteManager {
         critical_section::with(|cs| GPIOTE_MANAGER.gpiote.replace(cs, Some(Gpiote::new(gpiote))));
     }
 
+    pub fn acquire(cs: CriticalSection<'_>) -> Option<RefMut<'_, Gpiote>> {
+        let rm = GPIOTE_MANAGER.gpiote.borrow_ref_mut(cs);
+        if rm.is_some() {
+            Some(RefMut::map(rm, |option| option.as_mut().unwrap()))
+        } else {
+            None
+        }
+    }
+
     pub fn get_channel(
         gpiote: &Gpiote,
         channel: ChannelId,
@@ -64,10 +70,8 @@ static GPIOTE_MANAGER: GpioteManager = GpioteManager {
     gpiote: Mutex::new(RefCell::new(Option::None)),
 };
 
-const INVALID_TASK_ID: usize = usize::MAX;
 const MAX_CHANNELS: usize = 8;
-static WAKE_TASKS: [AtomicUsize; MAX_CHANNELS] =
-    [const { AtomicUsize::new(INVALID_TASK_ID) }; MAX_CHANNELS];
+static WAKE_TASKS: [AtomicWaker; MAX_CHANNELS] = [const { AtomicWaker::new() }; MAX_CHANNELS];
 static NEXT_CHANNEL: AtomicUsize = AtomicUsize::new(0);
 
 type InputChannelPin = Pin<Input<Floating>>;
@@ -83,11 +87,9 @@ impl InputChannel {
     pub fn new(pin: InputChannelPin) -> Result<Self, GpioteError> {
         let channel_id = NEXT_CHANNEL.fetch_add(1, Ordering::Relaxed);
         critical_section::with(|cs| {
-            let mut gpiote = GPIOTE_MANAGER.gpiote.borrow_ref_mut(cs);
-            let gpiote = gpiote
-                .as_mut()
-                .ok_or(GpioteError::GpioteManagerUninitialized)?;
-            let channel = GpioteManager::get_channel(gpiote, channel_id)?;
+            let gpiote =
+                GpioteManager::acquire(cs).ok_or(GpioteError::GpioteManagerUninitialized)?;
+            let channel = GpioteManager::get_channel(&gpiote, channel_id)?;
             channel.input_pin(&pin).toggle().enable_interrupt();
             unsafe { NVIC::unmask(Interrupt::GPIOTE) }
             Ok(())
@@ -100,7 +102,7 @@ impl InputChannel {
             if ready_state == PinState::from(self.pin.is_high().unwrap_infallible()) {
                 Poll::Ready(())
             } else {
-                WAKE_TASKS[self.channel_id].store(cx.waker().task_id(), Ordering::Relaxed);
+                critical_section::with(|cs| WAKE_TASKS[self.channel_id].register(cs, cx.waker()));
                 Poll::Pending
             }
         })
@@ -111,8 +113,7 @@ impl InputChannel {
 #[interrupt]
 fn GPIOTE() {
     critical_section::with(|cs| {
-        let mut rm = GPIOTE_MANAGER.gpiote.borrow_ref_mut(cs);
-        let Some(gpiote) = rm.as_mut() else {
+        let Some(gpiote) = GpioteManager::acquire(cs) else {
             error!("GpioteManager is uninitialized");
             return;
         };
@@ -120,18 +121,10 @@ fn GPIOTE() {
             .iter()
             .enumerate()
             .filter(|(channel, _)| {
-                GpioteManager::get_channel(gpiote, *channel)
+                GpioteManager::get_channel(&gpiote, *channel)
                     .is_ok_and(|channel| channel.is_event_triggered())
             })
-            .filter_map(|(_, task)| {
-                let task_id = task.swap(INVALID_TASK_ID, Ordering::Relaxed);
-                if task_id == INVALID_TASK_ID {
-                    None
-                } else {
-                    Some(task_id)
-                }
-            })
-            .for_each(Executor::wake_task);
+            .for_each(|(_, task)| task.wake(cs));
         gpiote.reset_events();
         // Dummy read for clock cycles
         let _ = gpiote.channel0().is_event_triggered();

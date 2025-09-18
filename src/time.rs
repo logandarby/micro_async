@@ -2,7 +2,7 @@ use core::{
     cell::{RefCell, RefMut},
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use critical_section::{CriticalSection, Mutex};
@@ -17,8 +17,6 @@ use nrf52833_hal::{
     rtc::{RtcCompareReg, RtcInterrupt},
 };
 use snafu::prelude::*;
-
-use crate::executor::{Executor, ExtWaker};
 
 pub struct Timer {
     end_time: TickInstant,
@@ -54,7 +52,7 @@ impl Future for Timer {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.state {
             TimerState::Init => {
-                Ticker::add_deadline(self.end_time, cx.waker().task_id()).unwrap();
+                Ticker::add_deadline(self.end_time, cx.waker()).unwrap();
                 self.state = TimerState::Wait;
                 Poll::Pending
             }
@@ -77,10 +75,30 @@ static TICKER: Ticker = Ticker {
     initialized: AtomicBool::new(false),
 };
 
-#[derive(Eq, PartialEq, PartialOrd, Ord, Debug)]
+#[derive(Debug)]
 struct Deadline {
     value: u64,
-    task_id: usize,
+    waker: Waker,
+}
+
+impl Eq for Deadline {}
+
+impl PartialEq for Deadline {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl PartialOrd for Deadline {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.value.partial_cmp(&other.value)
+    }
+}
+
+impl Ord for Deadline {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.value.cmp(&other.value)
+    }
 }
 
 const DEADLINE_MAX_ITEMS: usize = 10;
@@ -113,8 +131,6 @@ impl Ticker {
         #[allow(clippy::unwrap_used)]
         let mut rtc0 = Rtc::new(rtc0, 0).unwrap();
         rtc0.enable_counter();
-
-        rtc0.trigger_overflow();
 
         // Enable overflow interrupt
         rtc0.enable_event(RtcInterrupt::Overflow);
@@ -153,14 +169,13 @@ impl Ticker {
         }
     }
 
-    // TODO: Implement overflow counter
-    fn add_deadline(deadline: TickInstant, task_id: usize) -> Result<(), TimerError> {
+    fn add_deadline(deadline: TickInstant, waker: &Waker) -> Result<(), TimerError> {
         let deadline_ticks = deadline.ticks();
         critical_section::with(|cs| {
             let mut deadlines = DEADLINES.borrow_ref_mut(cs);
             deadlines
                 .push(Deadline {
-                    task_id,
+                    waker: waker.clone(),
                     value: deadline_ticks,
                 })
                 .map_err(|_| TimerError::TimerQueueFull)?;
@@ -205,7 +220,7 @@ fn RTC0() {
             if let Some(pending_deadline) = deadlines.peek() {
                 set_deadline(pending_deadline, &mut rtc0);
             }
-            Executor::wake_task(latest.task_id);
+            latest.waker.wake();
             rtc0.reset_event(RtcInterrupt::Compare0);
         }
         // Read needed for clock cycles

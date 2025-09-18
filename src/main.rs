@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+// Microcontroller is single threaded
 #![allow(clippy::future_not_send)]
 
 use core::{
@@ -24,6 +25,7 @@ use crate::{
     time::{TickDuration, Timer},
 };
 
+mod atomic_waker;
 mod board;
 mod channel;
 mod executor;
@@ -31,6 +33,7 @@ mod gpiote;
 mod infalliable;
 mod led;
 mod time;
+
 async fn led_task(
     leds: &mut LedMatrix,
     blink_duration: TickDuration,
@@ -104,7 +107,7 @@ fn main() -> ! {
         ButtonDirection::Left,
         btn_channel.get_sender()
     ));
-    Executor::run_tasks(&mut [button_task_l, button_task_r, led_task]);
+    Executor::run_tasks([button_task_l, button_task_r, led_task]);
 }
 
 #[panic_handler]

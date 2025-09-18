@@ -15,7 +15,8 @@ type TaskQueue = Queue<usize, MAX_TASKS>;
 static TASK_ID_READY: TaskQueue = TaskQueue::new();
 
 impl Executor {
-    pub fn run_tasks(tasks: &mut [Pin<&mut dyn Future<Output = ()>>]) -> ! {
+    pub fn run_tasks<const N: usize>(mut tasks: [Pin<&mut dyn Future<Output = ()>>; N]) -> ! {
+        const { assert!(N < MAX_TASKS, "Too many tasks have been selected to run") };
         for task_id in 0..tasks.len() {
             TASK_ID_READY.enqueue(task_id).expect("Task queue is full");
         }
@@ -39,16 +40,6 @@ impl Executor {
     }
 }
 
-pub trait ExtWaker {
-    fn task_id(&self) -> usize;
-}
-
-impl ExtWaker for Waker {
-    fn task_id(&self) -> usize {
-        self.data() as usize
-    }
-}
-
 pub struct WakerManager {}
 
 static VTABLE: RawWakerVTable = RawWakerVTable::new(
@@ -59,7 +50,7 @@ static VTABLE: RawWakerVTable = RawWakerVTable::new(
 );
 
 impl WakerManager {
-    pub fn get_waker(task_id: usize) -> Waker {
+    fn get_waker(task_id: usize) -> Waker {
         unsafe { Waker::new(task_id as *const (), &VTABLE) }
     }
 
