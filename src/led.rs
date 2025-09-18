@@ -1,7 +1,7 @@
 use embedded_hal::digital::{OutputPin, PinState, StatefulOutputPin};
 use nrf52833_hal::gpio::{Output, Pin, PushPull};
 
-use crate::infalliable::InfallibleExt;
+use crate::utils::InfallibleExt;
 
 #[derive(Copy, Clone)]
 pub enum LedState {

@@ -1,5 +1,6 @@
 use core::{
     pin::Pin,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     task::{Context, Poll, Waker},
 };
 
@@ -127,7 +128,7 @@ impl Ticker {
         rtc0.enable_interrupt(RtcInterrupt::Compare0, Some(nvic));
 
         // Init
-        TICKER.init(Self {
+        TICKER.init(Ticker {
             overflow_count: 0,
             rtc0,
             deadlines: BinaryHeap::new(),
@@ -172,7 +173,7 @@ fn RTC0() {
 }
 
 fn handle_rtc0_interrupt(ticker: &mut Ticker) {
-    let rtc0 = &mut ticker.rtc0;
+    let rtc0 = ticker.rtc0;
     if rtc0.is_event_triggered(RtcInterrupt::Overflow) {
         rtc0.reset_event(RtcInterrupt::Overflow);
         ticker.overflow_count += 1;
@@ -183,8 +184,8 @@ fn handle_rtc0_interrupt(ticker: &mut Ticker) {
             .deadlines
             .pop()
             .expect("No deadline available on interrupt");
-        if let Some(pending_deadline) = ticker.deadlines.peek() {
-            set_deadline(pending_deadline, rtc0);
+        if let Some(pending_deadline) = deadlines.peek() {
+            set_deadline(pending_deadline, &mut rtc0);
         }
         latest.waker.wake();
     }

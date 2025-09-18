@@ -1,7 +1,5 @@
 #![no_std]
 #![no_main]
-// Microcontroller is single threaded
-#![allow(clippy::future_not_send)]
 
 use core::{
     panic::PanicInfo,
@@ -25,14 +23,13 @@ use crate::{
     time::{TickDuration, Timer},
 };
 
-mod atomic_waker;
 mod board;
 mod channel;
 mod executor;
 mod gpiote;
-mod infalliable;
 mod led;
 mod time;
+mod utils;
 
 async fn led_task(
     leds: &mut LedMatrix,

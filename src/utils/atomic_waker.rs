@@ -22,7 +22,11 @@ impl AtomicWaker {
         });
     }
 
-    pub fn wake(&self, cs: CriticalSection) {
+    pub fn wake(&self) {
+        critical_section::with(|cs| self.wake_with_cs(cs));
+    }
+
+    pub fn wake_with_cs(&self, cs: CriticalSection) {
         if let Some(waker) = self.inner.borrow(cs).replace(None) {
             waker.wake_by_ref();
         }

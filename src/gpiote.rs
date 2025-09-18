@@ -1,12 +1,9 @@
 use core::{
-    cell::{RefCell, RefMut},
     future::poll_fn,
     sync::atomic::{AtomicUsize, Ordering},
     task::Poll,
 };
 
-use critical_section::{CriticalSection, Mutex};
-use defmt::error;
 use embedded_hal::digital::{InputPin, PinState};
 use nrf52833_hal::{
     gpio::{Floating, Input, Pin},
@@ -14,11 +11,7 @@ use nrf52833_hal::{
     pac::{GPIOTE, Interrupt, NVIC, interrupt},
 };
 
-use crate::{atomic_waker::AtomicWaker, infalliable::InfallibleExt};
-
-pub struct GpioteManager {
-    gpiote: Mutex<RefCell<Option<Gpiote>>>,
-}
+use crate::utils::{AtomicWaker, InfallibleExt, LockMut};
 
 use snafu::prelude::*;
 
@@ -30,45 +23,31 @@ pub enum GpioteError {
         "Too many InputChannels have been initialized, only {MAX_CHANNELS} are permitted."
     ))]
     OutOfChannels,
-    #[snafu(display("Please initialize GpioteManager first"))]
-    GpioteManagerUninitialized,
 }
+
+fn get_channel(gpiote: &Gpiote, channel: ChannelId) -> Result<GpioteChannel<'_>, GpioteError> {
+    Ok(match channel {
+        0 => gpiote.channel0(),
+        1 => gpiote.channel1(),
+        2 => gpiote.channel2(),
+        3 => gpiote.channel3(),
+        4 => gpiote.channel4(),
+        5 => gpiote.channel5(),
+        6 => gpiote.channel6(),
+        7 => gpiote.channel7(),
+        _ => return Err(GpioteError::OutOfChannels),
+    })
+}
+
+pub struct GpioteManager {}
 
 impl GpioteManager {
     pub fn init(gpiote: GPIOTE) {
-        critical_section::with(|cs| GPIOTE_MANAGER.gpiote.replace(cs, Some(Gpiote::new(gpiote))));
-    }
-
-    pub fn acquire(cs: CriticalSection<'_>) -> Option<RefMut<'_, Gpiote>> {
-        let rm = GPIOTE_MANAGER.gpiote.borrow_ref_mut(cs);
-        if rm.is_some() {
-            Some(RefMut::map(rm, |option| option.as_mut().unwrap()))
-        } else {
-            None
-        }
-    }
-
-    pub fn get_channel(
-        gpiote: &Gpiote,
-        channel: ChannelId,
-    ) -> Result<GpioteChannel<'_>, GpioteError> {
-        Ok(match channel {
-            0 => gpiote.channel0(),
-            1 => gpiote.channel1(),
-            2 => gpiote.channel2(),
-            3 => gpiote.channel3(),
-            4 => gpiote.channel4(),
-            5 => gpiote.channel5(),
-            6 => gpiote.channel6(),
-            7 => gpiote.channel7(),
-            _ => return Err(GpioteError::OutOfChannels),
-        })
+        GPIOTE_MANAGER.init(Gpiote::new(gpiote));
     }
 }
 
-static GPIOTE_MANAGER: GpioteManager = GpioteManager {
-    gpiote: Mutex::new(RefCell::new(Option::None)),
-};
+static GPIOTE_MANAGER: LockMut<Gpiote> = LockMut::new();
 
 const MAX_CHANNELS: usize = 8;
 static WAKE_TASKS: [AtomicWaker; MAX_CHANNELS] = [const { AtomicWaker::new() }; MAX_CHANNELS];
@@ -86,10 +65,8 @@ pub struct InputChannel {
 impl InputChannel {
     pub fn new(pin: InputChannelPin) -> Result<Self, GpioteError> {
         let channel_id = NEXT_CHANNEL.fetch_add(1, Ordering::Relaxed);
-        critical_section::with(|cs| {
-            let gpiote =
-                GpioteManager::acquire(cs).ok_or(GpioteError::GpioteManagerUninitialized)?;
-            let channel = GpioteManager::get_channel(&gpiote, channel_id)?;
+        GPIOTE_MANAGER.with_lock(|gpiote| {
+            let channel = get_channel(gpiote, channel_id)?;
             channel.input_pin(&pin).toggle().enable_interrupt();
             unsafe { NVIC::unmask(Interrupt::GPIOTE) }
             Ok(())
@@ -112,21 +89,18 @@ impl InputChannel {
 
 #[interrupt]
 fn GPIOTE() {
-    critical_section::with(|cs| {
-        let Some(gpiote) = GpioteManager::acquire(cs) else {
-            error!("GpioteManager is uninitialized");
-            return;
-        };
-        WAKE_TASKS
-            .iter()
-            .enumerate()
-            .filter(|(channel, _)| {
-                GpioteManager::get_channel(&gpiote, *channel)
-                    .is_ok_and(|channel| channel.is_event_triggered())
-            })
-            .for_each(|(_, task)| task.wake(cs));
-        gpiote.reset_events();
-        // Dummy read for clock cycles
-        let _ = gpiote.channel0().is_event_triggered();
-    });
+    GPIOTE_MANAGER.with_lock(handle_gpiote_interrupt);
+}
+
+fn handle_gpiote_interrupt(gpiote: &mut Gpiote) {
+    WAKE_TASKS
+        .iter()
+        .enumerate()
+        .filter(|(channel, _)| {
+            get_channel(gpiote, *channel).is_ok_and(|channel| channel.is_event_triggered())
+        })
+        .for_each(|(_, task)| task.wake());
+    gpiote.reset_events();
+    // Dummy read for clock cycles
+    let _ = gpiote.channel0().is_event_triggered();
 }
