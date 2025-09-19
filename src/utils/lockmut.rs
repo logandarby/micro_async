@@ -1,18 +1,28 @@
-use core::cell::{RefCell, RefMut};
+use core::cell::{Cell, RefCell, RefMut};
 
 use critical_section::{CriticalSection, Mutex};
+
+pub struct LockCell<T> {
+    inner: Mutex<Cell<T>>,
+}
+
+impl<T> LockCell<T> {
+    pub const fn new(t: T) -> Self {
+        Self {
+            inner: Mutex::new(Cell::new(t)),
+        }
+    }
+
+    pub fn with_lock<R>(&self, f: impl FnOnce(&Cell<T>) -> R) -> R {
+        critical_section::with(|cs| f(self.inner.borrow(cs)))
+    }
+}
 
 pub struct LockMut<T> {
     inner: Mutex<RefCell<Option<T>>>,
 }
 
 impl<T> LockMut<T> {
-    pub const fn new_with_value(t: T) -> Self {
-        Self {
-            inner: Mutex::new(RefCell::new(Some(t))),
-        }
-    }
-
     pub const fn new() -> Self {
         Self {
             inner: Mutex::new(RefCell::new(None)),

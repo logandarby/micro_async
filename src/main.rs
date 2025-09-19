@@ -56,6 +56,8 @@ pub enum ButtonDirection {
     Right,
 }
 
+const BUTTON_DEBOUNCE: TickDuration = TickDuration::millis(50);
+
 pub async fn button_task(
     button: Button,
     direction: ButtonDirection,
@@ -81,6 +83,8 @@ pub async fn button_task(
                 ButtonDirection::Right => "Right",
             }
         );
+        // Debounce
+        Timer::delay(BUTTON_DEBOUNCE).await;
     }
 }
 
@@ -91,7 +95,7 @@ fn main() -> ! {
     let btn_channel = Channel::<ButtonDirection>::new();
     let led_task = pin!(led_task(
         &mut b.leds,
-        TickDuration::millis(500),
+        TickDuration::millis(200),
         btn_channel.get_recv()
     ));
     let button_task_r = pin!(button_task(
