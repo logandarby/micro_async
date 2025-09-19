@@ -1,11 +1,9 @@
 use core::{
-    cell::Cell,
     marker::PhantomPinned,
-    pin::Pin,
+    pin::{Pin, pin},
     task::{Context, Poll, Waker},
 };
 
-use critical_section::Mutex;
 use fugit::{Duration, Instant};
 pub type TickInstant = Instant<u64, 1, 32768>;
 pub type TickDuration = Duration<u64, 1, 32768>;
@@ -16,25 +14,33 @@ use nrf52833_hal::{
 };
 use snafu::prelude::*;
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::{KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter};
 
 use crate::utils::{LockCell, LockMut};
-
-intrusive_adapter!(TimerAdapter = UnsafeRef<TimerInner>: TimerInner { link: LinkedListAtomicLink } );
 
 pub struct Timer {
     // SAFETY: Never access this through a mutable reference
     inner: TimerInner,
+    _pin: PhantomPinned,
 }
 
 struct TimerQueue {
-    timers: LinkedList<TimerAdapter>,
+    timers: RBTree<TimerAdapter>,
+}
+
+intrusive_adapter!(TimerAdapter = UnsafeRef<TimerInner>: TimerInner { link: RBTreeAtomicLink } );
+
+impl<'a> KeyAdapter<'a> for TimerAdapter {
+    type Key = u64;
+    fn get_key(&self, value: &'a TimerInner) -> Self::Key {
+        value.end_time.ticks()
+    }
 }
 
 impl TimerQueue {
     fn new() -> Self {
         Self {
-            timers: LinkedList::new(TimerAdapter::new()),
+            timers: RBTree::new(TimerAdapter::new()),
         }
     }
 
@@ -42,19 +48,12 @@ impl TimerQueue {
         /*
            SAFETY:
            UnsafeRef is safe if the object it is pointing to is not moved, dropped, or accessed through a mutable reference during the UnsafeRef's lifetime.
-           - The inner value is pinned to avoid moving
+           - The API for the timer atomatically pins the value to avoid moving
            - The timer never exposes any functions to mutably alter the TimerInner, and the TimerInner is itself never accessed mutably
            - When the timer is dropped, it is first removed from the linked list
         */
         let timer_ref = unsafe { UnsafeRef::from_raw(&timer.inner) };
-        let mut cursor = self.timers.front_mut();
-        while let Some(current) = cursor.get() {
-            if current.end_time > timer.inner.end_time {
-                break;
-            }
-            cursor.move_next();
-        }
-        cursor.insert_before(timer_ref);
+        self.timers.insert(timer_ref);
     }
 
     fn remove_timer(&mut self, timer: &Timer) {
@@ -71,7 +70,13 @@ impl TimerQueue {
     }
 
     fn pop_earliest(&mut self) -> Option<UnsafeRef<TimerInner>> {
-        self.timers.pop_front()
+        if self.timers.is_empty() {
+            None
+        } else {
+            let mut cursor = self.timers.front_mut();
+            let timer_ref = cursor.remove();
+            timer_ref
+        }
     }
 }
 
@@ -81,26 +86,29 @@ struct TimerInner {
     end_time: TickInstant,
     state: LockCell<TimerState>,
     waker: LockCell<Option<Waker>>,
-    link: LinkedListAtomicLink,
+    link: RBTreeAtomicLink,
     _pin: PhantomPinned,
 }
 
 impl Timer {
-    pub fn new(duration: TickDuration) -> Self {
+    fn new(duration: TickDuration) -> Self {
         let end_time = Ticker::now() + duration;
         Self {
             inner: TimerInner {
                 end_time,
                 state: LockCell::new(TimerState::Init),
                 waker: LockCell::new(None),
-                link: LinkedListAtomicLink::new(),
+                link: RBTreeAtomicLink::new(),
                 _pin: PhantomPinned,
             },
+            _pin: PhantomPinned,
         }
     }
 
     pub async fn delay(duration: TickDuration) {
-        Self::new(duration).await;
+        // Garuntees that the value can't be moved (for the unsaferef)
+        let timer = pin!(Self::new(duration));
+        timer.await;
     }
 
     fn is_ready(&self) -> bool {

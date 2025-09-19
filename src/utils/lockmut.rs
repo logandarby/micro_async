@@ -1,6 +1,6 @@
-use core::cell::{Cell, RefCell, RefMut};
+use core::cell::{Cell, RefCell};
 
-use critical_section::{CriticalSection, Mutex};
+use critical_section::Mutex;
 
 pub struct LockCell<T> {
     inner: Mutex<Cell<T>>,
@@ -40,12 +40,6 @@ impl<T> LockMut<T> {
                 .borrow_ref_mut(cs)
                 .as_mut()
                 .expect("Please initialize the LockMut first"))
-        })
-    }
-
-    pub fn acquire<'a>(&'a self, cs: CriticalSection<'a>) -> RefMut<'a, T> {
-        RefMut::map(self.inner.borrow_ref_mut(cs), |opt| {
-            opt.as_mut().expect("Please initialize the LockMut first")
         })
     }
 }
